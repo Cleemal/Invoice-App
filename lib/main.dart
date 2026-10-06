@@ -501,4 +501,192 @@ class _InvoiceEditorState extends State<InvoiceEditor> {
         Align(
           alignment: Alignment.centerLeft,
           child: TextButton.icon(
-            icon: const Icon(
+            icon: const Icon(Icons.person_add),
+            label: const Text('New client'),
+            onPressed: () async {
+              final c = await clientDialog(context);
+              if (c != null) {
+                store.clients.add(c);
+                await store.save();
+                setState(() => inv.clientId = c.id);
+              }
+            },
+          ),
+        ),
+        Row(children: [
+          Expanded(child: OutlinedButton(onPressed: () => pick(false), child: Text('Date: ${fmtDate(inv.date)}'))),
+          const SizedBox(width: 8),
+          Expanded(child: OutlinedButton(onPressed: () => pick(true), child: Text('Due: ${fmtDate(inv.due)}'))),
+        ]),
+        const SizedBox(height: 16),
+        const Text('Items', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+        ...inv.items.asMap().entries.map((e) => ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(e.value.desc),
+              subtitle: Text('${trimNum(e.value.qty)} × ${money(e.value.price)}'),
+              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                Text(money(e.value.qty * e.value.price)),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => setState(() => inv.items.removeAt(e.key)),
+                ),
+              ]),
+              onTap: () async {
+                final r = await itemDialog(context, e.value);
+                if (r != null) setState(() => inv.items[e.key] = r);
+              },
+            )),
+        TextButton.icon(
+          icon: const Icon(Icons.add),
+          label: const Text('Add item'),
+          onPressed: () async {
+            final r = await itemDialog(context);
+            if (r != null) setState(() => inv.items.add(r));
+          },
+        ),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: TextField(
+              controller: disc,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(labelText: 'Discount ($cur)', border: const OutlineInputBorder()),
+              onChanged: (v) => setState(() => inv.discount = parse(v)),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: TextField(
+              controller: tax,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Tax (%)', border: OutlineInputBorder()),
+              onChanged: (v) => setState(() => inv.taxPct = parse(v)),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 12),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(children: [
+              _row('Subtotal', money(inv.subtotal, cur)),
+              if (inv.discount > 0) _row('Discount', '- ${money(inv.discount, cur)}'),
+              if (inv.taxPct > 0) _row('Tax (${trimNum(inv.taxPct)}%)', money(inv.tax, cur)),
+              const Divider(),
+              _row('TOTAL', money(inv.total, cur), bold: true),
+            ]),
+          ),
+        ),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(
+          value: inv.status == 'overdue' ? 'sent' : inv.status,
+          decoration: const InputDecoration(labelText: 'Status', border: OutlineInputBorder()),
+          items: const [
+            DropdownMenuItem(value: 'draft', child: Text('Draft')),
+            DropdownMenuItem(value: 'sent', child: Text('Sent')),
+            DropdownMenuItem(value: 'paid', child: Text('Paid')),
+          ],
+          onChanged: (v) => setState(() => inv.status = v ?? 'draft'),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: notes,
+          maxLines: 2,
+          decoration: const InputDecoration(labelText: 'Notes (optional)', border: OutlineInputBorder()),
+        ),
+        const SizedBox(height: 16),
+        FilledButton(onPressed: save, child: const Padding(padding: EdgeInsets.all(12), child: Text('Save invoice'))),
+        const SizedBox(height: 24),
+      ]),
+    );
+  }
+
+  Widget _row(String a, String b, {bool bold = false}) {
+    final s = TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.normal, fontSize: bold ? 16 : 14);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(a, style: s), Text(b, style: s)]),
+    );
+  }
+}
+
+// ---------- PDF ----------
+Future<void> sharePdf(Invoice inv) async {
+  final b = store.business;
+  final c = store.clientById(inv.clientId);
+  final cur = b.currency;
+  final doc = pw.Document();
+
+  pw.TextStyle ts(bool bold, [double size = 11]) =>
+      pw.TextStyle(fontSize: size, fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal);
+  pw.Widget cell(String t, {bool bold = false}) =>
+      pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(t, style: ts(bold)));
+  pw.Widget line(String a, String v, {bool bold = false}) => pw.Container(
+        width: 230,
+        padding: const pw.EdgeInsets.symmetric(vertical: 2),
+        child: pw.Row(
+            mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+            children: [pw.Text(a, style: ts(bold, bold ? 13 : 11)), pw.Text(v, style: ts(bold, bold ? 13 : 11))]),
+      );
+
+  doc.addPage(pw.MultiPage(
+    pageFormat: PdfPageFormat.a4,
+    margin: const pw.EdgeInsets.all(32),
+    build: (ctx) => [
+      pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+        pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+          pw.Text(b.name.isEmpty ? 'My Business' : b.name, style: ts(true, 20)),
+          if (b.address.isNotEmpty) pw.Text(b.address),
+          if (b.phone.isNotEmpty) pw.Text(b.phone),
+          if (b.email.isNotEmpty) pw.Text(b.email),
+        ]),
+        pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [
+          pw.Text('INVOICE', style: ts(true, 22)),
+          pw.Text(inv.code),
+          pw.Text('Date: ${fmtDate(inv.date)}'),
+          pw.Text('Due: ${fmtDate(inv.due)}'),
+        ]),
+      ]),
+      pw.SizedBox(height: 24),
+      pw.Text('Bill to', style: ts(true)),
+      pw.Text(c?.name ?? ''),
+      if (c != null && c.address.isNotEmpty) pw.Text(c.address),
+      if (c != null && c.phone.isNotEmpty) pw.Text(c.phone),
+      if (c != null && c.email.isNotEmpty) pw.Text(c.email),
+      pw.SizedBox(height: 16),
+      pw.Table(
+        border: pw.TableBorder.all(color: PdfColors.grey400),
+        columnWidths: {
+          0: const pw.FlexColumnWidth(4),
+          1: const pw.FlexColumnWidth(1),
+          2: const pw.FlexColumnWidth(2),
+          3: const pw.FlexColumnWidth(2),
+        },
+        children: [
+          pw.TableRow(
+            decoration: const pw.BoxDecoration(color: PdfColors.grey300),
+            children: [cell('Description', bold: true), cell('Qty', bold: true), cell('Price', bold: true), cell('Amount', bold: true)],
+          ),
+          ...inv.items.map((i) => pw.TableRow(children: [
+                cell(i.desc), cell(trimNum(i.qty)), cell(money(i.price)), cell(money(i.qty * i.price)),
+              ])),
+        ],
+      ),
+      pw.SizedBox(height: 12),
+      pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [
+        pw.Column(children: [
+          line('Subtotal', money(inv.subtotal, cur)),
+          if (inv.discount > 0) line('Discount', '- ${money(inv.discount, cur)}'),
+          if (inv.taxPct > 0) line('Tax (${trimNum(inv.taxPct)}%)', money(inv.tax, cur)),
+          pw.Divider(),
+          line('TOTAL', money(inv.total, cur), bold: true),
+        ]),
+      ]),
+      pw.SizedBox(height: 24),
+      if (b.payment.isNotEmpty) ...[pw.Text('Payment details', style: ts(true)), pw.Text(b.payment), pw.SizedBox(height: 12)],
+      if (inv.notes.isNotEmpty) ...[pw.Text('Notes', style: ts(true)), pw.Text(inv.notes)],
+    ],
+  ));
+
+  await Printing.sharePdf(bytes: await doc.save(), filename: '${inv.code}.pdf');
+}
